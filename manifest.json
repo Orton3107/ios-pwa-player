@@ -9,7 +9,7 @@
       "purpose": "any"
     }
   ],
-  "start_url": ".",
+  "start_url": "https://orton3107.github.io/ios-pwa-player/",
   "background_color": "#020617",
   "theme_color": "#090d16",
   "display": "standalone",
