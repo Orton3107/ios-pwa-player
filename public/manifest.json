@@ -1,0 +1,17 @@
+{
+  "short_name": "iPlayer",
+  "name": "iOS PWA Music Player",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180' width='180' height='180'><defs><linearGradient id='bg' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%230b0f19'/><stop offset='100%25' stop-color='%23020617'/></linearGradient><linearGradient id='neonGlow' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%23a855f7'/><stop offset='50%25' stop-color='%236366f1'/><stop offset='100%25' stop-color='%23ec4899'/></linearGradient><filter id='blur' x='-20%25' y='-20%25' width='140%25' height='140%25'><feDropShadow dx='0' dy='6' stdDeviation='10' flood-color='%236366f1' flood-opacity='0.6'/></filter></defs><rect width='180' height='180' rx='40' fill='url(%23bg)'/><circle cx='90' cy='90' r='48' fill='none' stroke='url(%23neonGlow)' stroke-width='4' filter='url(%23blur)'/><circle cx='90' cy='90' r='34' fill='none' stroke='%231e293b' stroke-width='2' stroke-dasharray='10 6'/><path d='M58 92 A32 32 0 0 1 122 92' fill='none' stroke='url(%23neonGlow)' stroke-width='6' stroke-linecap='round' filter='url(%23blur)'/><rect x='50' y='82' width='10' height='22' rx='5' fill='url(%23neonGlow)' filter='url(%23blur)'/><rect x='120' y='82' width='10' height='22' rx='5' fill='url(%23neonGlow)' filter='url(%23blur)'/><path d='M80 90 L80 100 M90 84 L90 106 M100 88 L100 102' stroke='%23f472b6' stroke-width='3' stroke-linecap='round' filter='url(%23blur)'/></svg>",
+      "sizes": "180x180",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#020617",
+  "theme_color": "#090d16",
+  "display": "standalone",
+  "orientation": "portrait"
+}
