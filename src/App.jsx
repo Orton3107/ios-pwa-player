@@ -94,6 +94,9 @@ export default function App() {
   const handleNextRef = useRef(null);
   const handlePrevRef = useRef(null);
   const togglePlayRef = useRef(null);
+  const playbackQueueRef = useRef([]);
+  const currentTrackIndexRef = useRef(0);
+  const isPlayingRef = useRef(false);
 
   // При первом запуске инициализируем базу, создаем стандартный плейлист,
   // подгружаем сохраненный фон и просим iOS не удалять наши данные при простое
@@ -396,24 +399,29 @@ export default function App() {
 
   // Переключение треков вперед/назад
   const handleNext = () => {
-    if (playbackQueue.length <= 1) return;
-    setCurrentTrackIndex((prev) => (prev + 1) % playbackQueue.length);
+    const queue = playbackQueueRef.current;
+    if (queue.length <= 1) return;
+    const newIndex = (currentTrackIndexRef.current + 1) % queue.length;
+    setCurrentTrackIndex(newIndex);
     setIsPlaying(true);
   };
 
   const handlePrev = () => {
-    if (playbackQueue.length <= 1) return;
+    const queue = playbackQueueRef.current;
+    if (queue.length <= 1) return;
     if (audioRef.current && audioRef.current.currentTime > 3) {
       audioRef.current.currentTime = 0;
     } else {
-      setCurrentTrackIndex((prev) => (prev - 1 + playbackQueue.length) % playbackQueue.length);
+      const newIndex = (currentTrackIndexRef.current - 1 + queue.length) % queue.length;
+      setCurrentTrackIndex(newIndex);
     }
     setIsPlaying(true);
   };
 
   const togglePlay = () => {
     if (!audioRef.current) return;
-    if (isPlaying) {
+    const currentlyPlaying = isPlayingRef.current;
+    if (currentlyPlaying) {
       audioRef.current.pause();
       setIsPlaying(false);
     } else {
@@ -428,7 +436,14 @@ export default function App() {
     handleNextRef.current = handleNext;
     handlePrevRef.current = handlePrev;
     togglePlayRef.current = togglePlay;
-  }, [playbackQueue, currentTrackIndex]);
+  }, [playbackQueue, currentTrackIndex, isPlaying]);
+  
+  // Синхронизация refs с state
+  useEffect(() => {
+    playbackQueueRef.current = playbackQueue;
+    currentTrackIndexRef.current = currentTrackIndex;
+    isPlayingRef.current = isPlaying;
+  }, [playbackQueue, currentTrackIndex, isPlaying]);
 
   // Плавный ползунок времени
   useEffect(() => {
