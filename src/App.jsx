@@ -37,6 +37,16 @@ const PRESET_BACKGROUNDS = [
   { id: 'rose', name: 'Роза', gradient: 'linear-gradient(135deg, #fb7185 0%, #581c87 100%)' },
 ];
 
+// Склонение слова "трек" по числу (1 трек, 2 трека, 5 треков)
+const trackWord = (count) => {
+  const abs = Math.abs(count) % 100;
+  const last = abs % 10;
+  if (abs > 10 && abs < 20) return 'треков';
+  if (last > 1 && last < 5) return 'трека';
+  if (last === 1) return 'трек';
+  return 'треков';
+};
+
 // Дефолтные треки для первого запуска приложения
 const DEFAULT_TRACKS = [
   {
@@ -79,6 +89,16 @@ export default function App() {
   // Создание нового плейлиста
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
+
+  // Переименование плейлиста
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renamePlaylistId, setRenamePlaylistId] = useState(null);
+  const [renamePlaylistName, setRenamePlaylistName] = useState('');
+
+  // Количество треков в каждом плейлисте (для карточек в библиотеке)
+  const [trackCounts, setTrackCounts] = useState({});
+  // Всплывающее уведомление (например, о пропущенных дублях при загрузке)
+  const [uploadNotice, setUploadNotice] = useState('');
 
   // Фон плеера: { type: 'default' } | { type: 'preset', presetId } | { type: 'custom', imageUrl }
   const [background, setBackground] = useState({ type: 'default' });
@@ -215,11 +235,27 @@ export default function App() {
           setPlaylists(loadedPlaylists);
           // Автоматически ставим первый плейлист в очередь воспроизведения, чтобы плеер не был пустым
           loadPlaybackQueue(loadedPlaylists[0].id);
+          loadTrackCounts();
         }
       };
     } catch (err) {
       console.error("Ошибка базы данных:", err);
     }
+  };
+
+  // Считаем количество треков в каждом плейлисте — для отображения на карточках
+  const loadTrackCounts = async () => {
+    const db = await initDB();
+    const tx = db.transaction(TRACKS_STORE, 'readonly');
+    const req = tx.objectStore(TRACKS_STORE).getAll();
+
+    req.onsuccess = () => {
+      const counts = {};
+      req.result.forEach(t => {
+        counts[t.playlistId] = (counts[t.playlistId] || 0) + 1;
+      });
+      setTrackCounts(counts);
+    };
   };
 
   // Загрузка очереди воспроизведения для плеера
@@ -330,6 +366,39 @@ export default function App() {
     };
   };
 
+  // Открытие модалки переименования для конкретного плейлиста
+  const openRenameModal = (playlist) => {
+    if (!playlist) return;
+    setRenamePlaylistId(playlist.id);
+    setRenamePlaylistName(playlist.name);
+    setShowRenameModal(true);
+  };
+
+  // Сохранение нового названия плейлиста
+  const handleRenamePlaylist = async () => {
+    const trimmed = renamePlaylistName.trim();
+    if (!trimmed || !renamePlaylistId) return;
+
+    const db = await initDB();
+    const tx = db.transaction(PLAYLISTS_STORE, 'readwrite');
+    const store = tx.objectStore(PLAYLISTS_STORE);
+    const req = store.get(renamePlaylistId);
+
+    req.onsuccess = () => {
+      const playlist = req.result;
+      if (playlist) {
+        store.put({ ...playlist, name: trimmed });
+      }
+    };
+
+    tx.oncomplete = () => {
+      setShowRenameModal(false);
+      setRenamePlaylistId(null);
+      setRenamePlaylistName('');
+      setupInitialData();
+    };
+  };
+
   // Загрузка песен во вкладку открытого плейлиста
   const handleFileUpload = async (e) => {
     const files = Array.from(e.target.files);
@@ -337,9 +406,27 @@ export default function App() {
 
     const db = await initDB();
 
+    // Собираем уже существующие в плейлисте треки, чтобы не добавлять дубли.
+    // Дублем считаем трек с тем же названием файла и тем же размером —
+    // этого достаточно, чтобы отличить повторную загрузку той же песни.
+    const existingTracks = await new Promise((resolve) => {
+      const req = db.transaction(TRACKS_STORE, 'readonly').objectStore(TRACKS_STORE).getAll();
+      req.onsuccess = () => resolve(req.result.filter(t => t.playlistId === selectedPlaylistId));
+    });
+    const seenKeys = new Set(existingTracks.map(t => `${t.title}::${t.fileBlob?.size || 0}`));
+
+    let skipped = 0;
+
     for (const file of files) {
       if (file.name.startsWith('.')) continue;
       const title = file.name.replace(/\.[^/.]+$/, "");
+      const key = `${title}::${file.size}`;
+
+      if (seenKeys.has(key)) {
+        skipped++;
+        continue;
+      }
+      seenKeys.add(key);
 
       const newTrackData = {
         playlistId: selectedPlaylistId,
@@ -355,6 +442,12 @@ export default function App() {
     }
 
     loadPlaylistTracks(selectedPlaylistId);
+    loadTrackCounts();
+
+    if (skipped > 0) {
+      setUploadNotice(`Пропущено ${skipped} ${trackWord(skipped)} — уже есть в плейлисте`);
+      setTimeout(() => setUploadNotice(''), 3500);
+    }
   };
 
   // Удаление песни из плейлиста
@@ -368,6 +461,7 @@ export default function App() {
       loadPlaylistTracks(selectedPlaylistId);
       // Если удаленный трек играл прямо сейчас, обновляем очередь плеера
       loadPlaybackQueue(selectedPlaylistId);
+      loadTrackCounts();
     };
   };
 
@@ -660,17 +754,20 @@ export default function App() {
 
               {/* Сетка плейлистов в стиле iOS */}
               <div className="flex-1 overflow-y-auto grid grid-cols-2 gap-4 p-2 max-h-[380px]">
-                {playlists.map((playlist) => (
-                  <div 
-                    key={playlist.id}
-                    onClick={() => setSelectedPlaylistId(playlist.id)}
-                    className="flex flex-col rounded-2xl bg-white/5 p-3 cursor-pointer active:scale-95 transition-all hover:bg-white/10"
-                  >
-                    <img src={playlist.cover} className="aspect-square w-full rounded-xl object-cover mb-2 shadow-md" alt="" />
-                    <span className="font-bold text-sm truncate text-left">{playlist.name}</span>
-                    <span className="text-xs text-slate-400 mt-0.5 text-left">Плейлист</span>
-                  </div>
-                ))}
+                {playlists.map((playlist) => {
+                  const count = trackCounts[playlist.id] || 0;
+                  return (
+                    <div
+                      key={playlist.id}
+                      onClick={() => setSelectedPlaylistId(playlist.id)}
+                      className="flex flex-col rounded-2xl bg-white/5 border border-white/10 p-3 shadow-lg cursor-pointer active:scale-95 transition-all hover:bg-white/10 hover:border-indigo-500/30"
+                    >
+                      <img src={playlist.cover} className="aspect-square w-full rounded-xl object-cover mb-3 shadow-md" alt="" />
+                      <span className="font-bold text-sm truncate text-left">{playlist.name}</span>
+                      <span className="text-xs text-slate-400 mt-0.5 text-left">{count} {trackWord(count)}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ) : (
@@ -691,28 +788,41 @@ export default function App() {
               </div>
 
               {/* Кнопки управления плейлистом */}
-              <div className="grid grid-cols-2 gap-3 mb-4 px-2">
-                <button 
+              <div className="grid grid-cols-3 gap-2 mb-3 px-2">
+                <button
                   onClick={() => fileInputRef.current.click()}
-                  className="flex items-center justify-center space-x-2 rounded-xl bg-indigo-600 p-3 text-xs font-semibold"
+                  className="flex flex-col items-center justify-center space-y-1 rounded-xl bg-indigo-600 p-3 text-[11px] font-semibold active:scale-95 transition-transform"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
-                  <span>Добавить треки</span>
+                  <span>Треки</span>
                 </button>
-                <button 
+                <button
+                  onClick={() => openRenameModal(playlists.find(p => p.id === selectedPlaylistId))}
+                  className="flex flex-col items-center justify-center space-y-1 rounded-xl bg-white/10 p-3 text-[11px] font-semibold active:scale-95 transition-transform"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" /></svg>
+                  <span>Переим.</span>
+                </button>
+                <button
                   onClick={() => handleDeletePlaylist(selectedPlaylistId)}
-                  className="flex items-center justify-center space-x-2 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 p-3 text-xs font-semibold"
+                  className="flex flex-col items-center justify-center space-y-1 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 p-3 text-[11px] font-semibold active:scale-95 transition-transform"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.34 9m-4.72 0L9 9m5 12.42V18h-4.5v3.42M12 3a9 9 0 00-9 9h18a9 9 0 00-9-9z" /></svg>
-                  <span>Удалить альбом</span>
+                  <span>Удалить</span>
                 </button>
-                {/* Ограничиваем выбор строго списком расширений аудиофайлов, убрав "audio/*". 
+                {/* Ограничиваем выбор строго списком расширений аудиофайлов, убрав "audio/*".
                     Это заставит iOS Safari открывать исключительно приложение "Файлы" */}
-                <input 
-                  type="file" ref={fileInputRef} onChange={handleFileUpload} 
-                  multiple accept=".mp3,.m4a,.wav,.flac,.aac,.ogg" className="hidden" 
+                <input
+                  type="file" ref={fileInputRef} onChange={handleFileUpload}
+                  multiple accept=".mp3,.m4a,.wav,.flac,.aac,.ogg" className="hidden"
                 />
               </div>
+
+              {uploadNotice && (
+                <div className="mx-2 mb-3 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-300">
+                  {uploadNotice}
+                </div>
+              )}
 
               {/* Список песен в плейлисте */}
               <div className="flex-1 overflow-y-auto space-y-2 pr-1 max-h-[320px] pb-4">
@@ -826,11 +936,47 @@ export default function App() {
               >
                 Отмена
               </button>
-              <button 
+              <button
                 onClick={handleCreatePlaylist}
                 className="flex-1 rounded-xl bg-indigo-600 p-3 text-sm font-semibold hover:bg-indigo-500"
               >
                 Создать
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* МОДАЛ ПЕРЕИМЕНОВАНИЯ ПЛЕЙЛИСТА */}
+      {showRenameModal && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md px-6">
+          <div className="w-full rounded-3xl bg-slate-900 border border-white/10 p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-250">
+            <h3 className="text-lg font-bold mb-4">Переименовать плейлист</h3>
+            <input
+              type="text"
+              placeholder="Название плейлиста"
+              value={renamePlaylistName}
+              onChange={(e) => setRenamePlaylistName(e.target.value)}
+              className="w-full rounded-xl bg-white/5 border border-white/10 p-3 text-white outline-none focus:border-indigo-500"
+              maxLength={30}
+              autoFocus
+            />
+            <div className="flex space-x-3 mt-6">
+              <button
+                onClick={() => {
+                  setShowRenameModal(false);
+                  setRenamePlaylistId(null);
+                  setRenamePlaylistName('');
+                }}
+                className="flex-1 rounded-xl bg-white/5 p-3 text-sm font-semibold hover:bg-white/10"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={handleRenamePlaylist}
+                className="flex-1 rounded-xl bg-indigo-600 p-3 text-sm font-semibold hover:bg-indigo-500"
+              >
+                Сохранить
               </button>
             </div>
           </div>
