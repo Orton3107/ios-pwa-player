@@ -105,10 +105,16 @@ export default function App() {
   // Защищено ли хранилище от автоматической очистки Safari при простое
   const [storagePersisted, setStoragePersisted] = useState(null);
 
+  // Экспорт/импорт резервной копии библиотеки
+  const [isExporting, setIsExporting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [backupNotice, setBackupNotice] = useState('');
+
   const currentTrack = playbackQueue[currentTrackIndex] || null;
   const audioRef = useRef(null);
   const fileInputRef = useRef(null);
   const backgroundFileInputRef = useRef(null);
+  const importFileInputRef = useRef(null);
 
   // Ссылки на методы для Media Session API (экран блокировки iOS)
   const handleNextRef = useRef(null);
@@ -141,6 +147,142 @@ export default function App() {
     } catch (err) {
       console.error('Ошибка запроса постоянного хранилища:', err);
       setStoragePersisted(false);
+    }
+  };
+
+  // Конвертация Blob в base64 data URL (для упаковки локальных файлов в JSON бэкапа)
+  const blobToBase64 = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+
+  // Экспорт всей библиотеки (плейлисты + треки) в один JSON-файл.
+  // Нужен как защита от потери данных при переустановке PWA-иконки на iOS,
+  // где данные веб-приложения хранятся в отдельной "песочнице",
+  // удаляемой вместе с иконкой.
+  const handleExportLibrary = async () => {
+    setIsExporting(true);
+    try {
+      const db = await initDB();
+
+      const playlistsData = await new Promise((resolve) => {
+        const req = db.transaction(PLAYLISTS_STORE, 'readonly').objectStore(PLAYLISTS_STORE).getAll();
+        req.onsuccess = () => resolve(req.result);
+      });
+
+      const tracksData = await new Promise((resolve) => {
+        const req = db.transaction(TRACKS_STORE, 'readonly').objectStore(TRACKS_STORE).getAll();
+        req.onsuccess = () => resolve(req.result);
+      });
+
+      const tracksExport = [];
+      for (const track of tracksData) {
+        tracksExport.push({
+          playlistId: track.playlistId,
+          title: track.title,
+          artist: track.artist,
+          cover: track.cover,
+          isLocal: track.isLocal,
+          url: track.isLocal ? null : track.url,
+          fileData: track.fileBlob ? await blobToBase64(track.fileBlob) : null,
+          fileType: track.fileBlob?.type || null,
+        });
+      }
+
+      const backup = {
+        app: 'ios-pwa-player',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        playlists: playlistsData.map(p => ({ id: p.id, name: p.name, cover: p.cover })),
+        tracks: tracksExport,
+      };
+
+      const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const stamp = backup.exportedAt.slice(0, 10);
+      a.download = `iplayer-backup-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      setBackupNotice('Резервная копия сохранена');
+    } catch (err) {
+      console.error('Ошибка экспорта библиотеки:', err);
+      setBackupNotice('Не удалось создать резервную копию');
+    } finally {
+      setIsExporting(false);
+      setTimeout(() => setBackupNotice(''), 4000);
+    }
+  };
+
+  // Импорт библиотеки из ранее экспортированного JSON-файла.
+  // Плейлисты добавляются как новые (без замены существующих), чтобы
+  // случайно не затереть текущие данные при импорте старой копии.
+  const handleImportLibrary = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setIsImporting(true);
+    try {
+      const text = await file.text();
+      const backup = JSON.parse(text);
+      if (!backup || !Array.isArray(backup.playlists) || !Array.isArray(backup.tracks)) {
+        throw new Error('Некорректный формат файла резервной копии');
+      }
+
+      const db = await initDB();
+      const idMap = {};
+
+      for (const p of backup.playlists) {
+        const newId = await new Promise((resolve, reject) => {
+          const tx = db.transaction(PLAYLISTS_STORE, 'readwrite');
+          const req = tx.objectStore(PLAYLISTS_STORE).add({ name: p.name, cover: p.cover });
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        idMap[p.id] = newId;
+      }
+
+      for (const t of backup.tracks) {
+        const newPlaylistId = idMap[t.playlistId];
+        if (newPlaylistId === undefined) continue;
+
+        let fileBlob = null;
+        if (t.isLocal && t.fileData) {
+          const res = await fetch(t.fileData);
+          fileBlob = await res.blob();
+        }
+
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(TRACKS_STORE, 'readwrite');
+          const req = tx.objectStore(TRACKS_STORE).add({
+            playlistId: newPlaylistId,
+            title: t.title,
+            artist: t.artist,
+            cover: t.cover,
+            isLocal: t.isLocal,
+            url: t.isLocal ? null : t.url,
+            fileBlob,
+          });
+          req.onsuccess = () => resolve();
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      setupInitialData();
+      setBackupNotice(`Импортировано плейлистов: ${backup.playlists.length}`);
+    } catch (err) {
+      console.error('Ошибка импорта библиотеки:', err);
+      setBackupNotice('Не удалось импортировать файл — проверьте формат');
+    } finally {
+      setIsImporting(false);
+      setTimeout(() => setBackupNotice(''), 4000);
     }
   };
 
@@ -574,18 +716,7 @@ export default function App() {
     audioRef.current = audio;
 
     audio.addEventListener('timeupdate', () => setCurrentTime(audio.currentTime));
-    audio.addEventListener('loadedmetadata', () => {
-      setDuration(audio.duration);
-      // Сообщаем iOS точную позицию/длительность, чтобы экран блокировки
-      // не терял синхронизацию с реальным состоянием воспроизведения
-      if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession && isFinite(audio.duration)) {
-        navigator.mediaSession.setPositionState({
-          duration: audio.duration,
-          playbackRate: audio.playbackRate,
-          position: audio.currentTime,
-        });
-      }
-    });
+    audio.addEventListener('loadedmetadata', () => setDuration(audio.duration));
     audio.addEventListener('ended', () => handleNextRef.current());
 
     if ('mediaSession' in navigator) {
@@ -593,6 +724,15 @@ export default function App() {
       navigator.mediaSession.setActionHandler('pause', () => togglePlayRef.current());
       navigator.mediaSession.setActionHandler('previoustrack', () => handlePrevRef.current());
       navigator.mediaSession.setActionHandler('nexttrack', () => handleNextRef.current());
+      // Явно отключаем перемотку — иначе iOS показывает на экране блокировки
+      // кнопки "промотка ±15с" вместо кнопок переключения треков
+      try {
+        navigator.mediaSession.setActionHandler('seekbackward', null);
+        navigator.mediaSession.setActionHandler('seekforward', null);
+        navigator.mediaSession.setActionHandler('seekto', null);
+      } catch {
+        // Некоторые версии Safari бросают ошибку на неподдерживаемых action-ах — это безопасно игнорировать
+      }
     }
 
     return () => {
@@ -632,13 +772,6 @@ export default function App() {
   useEffect(() => {
     if ('mediaSession' in navigator) {
       navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
-      if ('setPositionState' in navigator.mediaSession && audioRef.current && isFinite(audioRef.current.duration)) {
-        navigator.mediaSession.setPositionState({
-          duration: audioRef.current.duration,
-          playbackRate: audioRef.current.playbackRate,
-          position: audioRef.current.currentTime,
-        });
-      }
     }
   }, [isPlaying]);
 
@@ -943,6 +1076,40 @@ export default function App() {
                 {storagePersisted === true && 'Хранилище защищено: Safari не будет автоматически удалять ваши плейлисты и треки при долгом простое.'}
                 {storagePersisted === false && 'Не удалось защитить хранилище от автоматической очистки. Открывайте приложение почаще, чтобы Safari не считала его неактивным.'}
               </div>
+            </div>
+
+            <div>
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3 px-1">Резервная копия библиотеки</h3>
+              <div className="rounded-2xl bg-white/5 p-4 text-xs leading-relaxed text-slate-300 mb-3">
+                При переустановке иконки приложения на главный экран iOS удаляет её данные вместе со старой иконкой. Сохраните резервную копию в файл, чтобы при необходимости восстановить плейлисты и треки.
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={handleExportLibrary}
+                  disabled={isExporting}
+                  className="flex items-center justify-center space-x-2 rounded-xl bg-indigo-600 p-3 text-xs font-semibold disabled:opacity-50 active:scale-95 transition-transform"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
+                  <span>{isExporting ? 'Экспорт...' : 'Экспортировать'}</span>
+                </button>
+                <button
+                  onClick={() => importFileInputRef.current.click()}
+                  disabled={isImporting}
+                  className="flex items-center justify-center space-x-2 rounded-xl bg-white/10 p-3 text-xs font-semibold disabled:opacity-50 active:scale-95 transition-transform"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M7.5 7.5L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
+                  <span>{isImporting ? 'Импорт...' : 'Импортировать'}</span>
+                </button>
+                <input
+                  type="file" ref={importFileInputRef} onChange={handleImportLibrary}
+                  accept="application/json,.json" className="hidden"
+                />
+              </div>
+              {backupNotice && (
+                <div className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-300">
+                  {backupNotice}
+                </div>
+              )}
             </div>
           </div>
         )}
