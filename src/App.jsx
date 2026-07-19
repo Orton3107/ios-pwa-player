@@ -552,12 +552,40 @@ export default function App() {
   // если при смене трека пересоздавать Audio(), на заблокированном
   // экране браузер молча блокирует play() и трек "зависает" без звука.
   // Поэтому элемент переиспользуется, а при смене трека меняется src.
+  //
+  // ТАКЖЕ ВАЖНО: элемент создается через new Audio() и существует только
+  // в памяти JS, не будучи вставлен в DOM. На iOS это приводит к тому, что
+  // аудиосессия при блокировке экрана переходит в "ambient"-режим — время
+  // трека продолжает идти, но звук глушится, пока телефон заблокирован,
+  // и появляется только после разблокировки. Чтобы iOS считал это полноценным
+  // фоновым воспроизведением (со звуком и рабочими кнопками на экране блокировки),
+  // элемент нужно реально добавить в документ.
   useEffect(() => {
     const audio = new Audio();
+    audio.setAttribute('playsinline', 'true');
+    audio.setAttribute('webkit-playsinline', 'true');
+    audio.preload = 'auto';
+    audio.style.position = 'fixed';
+    audio.style.width = '0';
+    audio.style.height = '0';
+    audio.style.opacity = '0';
+    audio.style.pointerEvents = 'none';
+    document.body.appendChild(audio);
     audioRef.current = audio;
 
     audio.addEventListener('timeupdate', () => setCurrentTime(audio.currentTime));
-    audio.addEventListener('loadedmetadata', () => setDuration(audio.duration));
+    audio.addEventListener('loadedmetadata', () => {
+      setDuration(audio.duration);
+      // Сообщаем iOS точную позицию/длительность, чтобы экран блокировки
+      // не терял синхронизацию с реальным состоянием воспроизведения
+      if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession && isFinite(audio.duration)) {
+        navigator.mediaSession.setPositionState({
+          duration: audio.duration,
+          playbackRate: audio.playbackRate,
+          position: audio.currentTime,
+        });
+      }
+    });
     audio.addEventListener('ended', () => handleNextRef.current());
 
     if ('mediaSession' in navigator) {
@@ -570,6 +598,7 @@ export default function App() {
     return () => {
       audio.pause();
       audio.src = '';
+      audio.remove();
     };
   }, []);
 
@@ -603,6 +632,13 @@ export default function App() {
   useEffect(() => {
     if ('mediaSession' in navigator) {
       navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+      if ('setPositionState' in navigator.mediaSession && audioRef.current && isFinite(audioRef.current.duration)) {
+        navigator.mediaSession.setPositionState({
+          duration: audioRef.current.duration,
+          playbackRate: audioRef.current.playbackRate,
+          position: audioRef.current.currentTime,
+        });
+      }
     }
   }, [isPlaying]);
 
