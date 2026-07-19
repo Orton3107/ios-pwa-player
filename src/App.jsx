@@ -452,20 +452,45 @@ export default function App() {
     }
   }, [currentTime, isDragging]);
 
-  // Жизненный цикл аудио-движка
+  // Создаем единственный <audio> элемент один раз при монтировании.
+  // ВАЖНО: iOS Safari разрешает автоматический play() без нового жеста
+  // пользователя только для элемента, который уже воспроизводился —
+  // если при смене трека пересоздавать Audio(), на заблокированном
+  // экране браузер молча блокирует play() и трек "зависает" без звука.
+  // Поэтому элемент переиспользуется, а при смене трека меняется src.
   useEffect(() => {
-    if (!currentTrack) return;
-    if (audioRef.current) audioRef.current.pause();
+    const audio = new Audio();
+    audioRef.current = audio;
 
-    audioRef.current = new Audio(currentTrack.url);
-    audioRef.current.muted = isMuted;
+    audio.addEventListener('timeupdate', () => setCurrentTime(audio.currentTime));
+    audio.addEventListener('loadedmetadata', () => setDuration(audio.duration));
+    audio.addEventListener('ended', () => handleNextRef.current());
 
-    audioRef.current.addEventListener('timeupdate', () => setCurrentTime(audioRef.current.currentTime));
-    audioRef.current.addEventListener('loadedmetadata', () => setDuration(audioRef.current.duration));
-    audioRef.current.addEventListener('ended', handleNext);
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.setActionHandler('play', () => togglePlayRef.current());
+      navigator.mediaSession.setActionHandler('pause', () => togglePlayRef.current());
+      navigator.mediaSession.setActionHandler('previoustrack', () => handlePrevRef.current());
+      navigator.mediaSession.setActionHandler('nexttrack', () => handleNextRef.current());
+    }
+
+    return () => {
+      audio.pause();
+      audio.src = '';
+    };
+  }, []);
+
+  // Смена трека: обновляем src того же аудио-элемента вместо пересоздания
+  useEffect(() => {
+    if (!currentTrack || !audioRef.current) return;
+    const audio = audioRef.current;
+
+    audio.pause();
+    audio.src = currentTrack.url;
+    audio.muted = isMuted;
+    audio.load();
 
     if (isPlaying) {
-      audioRef.current.play().catch(() => setIsPlaying(false));
+      audio.play().catch(() => setIsPlaying(false));
     }
 
     // Media Session API (iOS Lock Screen)
@@ -478,18 +503,7 @@ export default function App() {
           { src: currentTrack.cover, sizes: '300x300', type: 'image/jpeg' }
         ]
       });
-
-      navigator.mediaSession.setActionHandler('play', () => togglePlayRef.current());
-      navigator.mediaSession.setActionHandler('pause', () => togglePlayRef.current());
-      navigator.mediaSession.setActionHandler('previoustrack', () => handlePrevRef.current());
-      navigator.mediaSession.setActionHandler('nexttrack', () => handleNextRef.current());
     }
-
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
-    };
   }, [currentTrackIndex, playbackQueue]);
 
   useEffect(() => {
