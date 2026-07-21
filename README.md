@@ -1,16 +1,47 @@
-# React + Vite
+# iOS PWA Music Player
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Музыкальный плеер в формате PWA (Progressive Web App), заточенный под iOS: работает как самостоятельное приложение с домашнего экрана, поддерживает управление с экрана блокировки (Media Session API), несколько плейлистов и локальную загрузку треков.
 
-Currently, two official plugins are available:
+Стек: React 19 + Vite, хранение данных — IndexedDB (плейлисты, треки, настройки), деплой — GitHub Pages.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Быстрый старт
 
-## React Compiler
+```bash
+npm install
+npm run dev      # запуск дев-сервера
+npm run build    # продакшн-сборка
+npm run deploy   # сборка + публикация на GitHub Pages
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Как это устроено сейчас
 
-## Expanding the Oxlint configuration
+Треки хранятся в браузере, в IndexedDB (`MultiPlaylistPlayerDB`):
+- **playlists** — список плейлистов (id, name, cover);
+- **tracks** — треки, привязанные к плейлисту (title, artist, cover, и либо `fileBlob` для локальных файлов, либо `url` для внешних ссылок);
+- **settings** — настройки плеера.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+Важно: код уже умеет проигрывать треки по внешней ссылке (`url`), не только загруженные вручную файлы (`fileBlob`). Это даёт готовую точку расширения для облачной синхронизации, описанной ниже — доработки на клиенте нужны только для получения и подмешивания манифеста, сам плейбек по `url` уже работает.
+
+Есть экспорт/импорт бэкапа плейлистов и треков в JSON (см. `App.jsx`), но это ручной перенос между устройствами, а не «облако» с автообновлением для всех пользователей.
+
+## Облачный плейлист (реализовано)
+
+Задача: закидывать музыку «куда-то в онлайн» и чтобы в любой момент все пользователи плеера могли подтянуть свежий плейлист, не переустанавливая приложение.
+
+**Решение: GitHub + jsDelivr CDN.**
+
+- Файлы треков лежат прямо в этом репозитории, в папке [`cloud-playlist/tracks/`](cloud-playlist/tracks/) — см. [`cloud-playlist/README.md`](cloud-playlist/README.md) для подробностей.
+- **Добавить трек — значит просто загрузить файл в эту папку** (например, через веб-интерфейс GitHub: Add file → Upload files, работает и с телефона) и запушить. Больше ничего вручную делать не нужно.
+- `cloud-playlist/manifest.json` **генерируется автоматически**: GitHub Action (`.github/workflows/cloud-playlist.yml`) при каждом пуше в `cloud-playlist/tracks/` пересобирает манифест по содержимому папки, читая название и исполнителя прямо из ID3-тегов файла, коммитит его обратно и сбрасывает кэш jsDelivr.
+- Раздача идёт не напрямую с GitHub, а через **jsDelivr** (`cdn.jsdelivr.net/gh/<user>/<repo>@<branch>/<path>`) — бесплатный CDN без лимитов на количество запросов, с кэшированием и быстрой отдачей по всему миру.
+- В приложении (`src/App.jsx`) при запуске и по кнопке «Обновить облачный плейлист» плеер:
+  - тянет `cloud-playlist/manifest.json` с CDN;
+  - создаёт (или находит) выделенный плейлист с флагом `isCloud`;
+  - добавляет новые треки как `isLocal: false` с `url` на CDN, обновляет метаданные у уже существующих и убирает те, что пропали из манифеста;
+  - локальные, вручную загруженные файлы не трогает — облачные и локальные треки спокойно живут в одной библиотеке рядом.
+
+Ограничения, которые стоит держать в голове:
+- лимит GitHub на файл — 100 МБ (рекомендуется до 25 МБ), весь репозиторий желательно не разрастать сильно за 1 ГБ;
+- репозиторий с музыкой должен быть публичным, чтобы jsDelivr мог его отдавать.
+
+**Альтернативы**, если понадобится удобная веб-загрузка без git или большие объёмы трафика: Supabase Storage (бесплатный тариф, drag-and-drop загрузка через веб-панель) или Cloudflare R2 (бесплатно 10 ГБ, без платы за исходящий трафик — лучше подходит при росте аудитории).

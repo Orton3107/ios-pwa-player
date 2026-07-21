@@ -1,0 +1,39 @@
+name: Обновление облачного плейлиста
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloud-playlist/tracks/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate manifest.json
+        run: npm run generate:cloud-manifest
+
+      - name: Commit manifest if changed
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: обновлён cloud-playlist/manifest.json'
+          file_pattern: cloud-playlist/manifest.json
+
+      - name: Purge jsDelivr cache
+        run: |
+          curl -s "https://purge.jsdelivr.net/gh/${{ github.repository }}@main/cloud-playlist/manifest.json" || true

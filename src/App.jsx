@@ -37,6 +37,14 @@ const PRESET_BACKGROUNDS = [
   { id: 'rose', name: 'Роза', gradient: 'linear-gradient(135deg, #fb7185 0%, #581c87 100%)' },
 ];
 
+// Облачный плейлист: манифест и файлы треков раздаются через jsDelivr CDN
+// поверх GitHub-репозитория проекта (см. cloud-playlist/README.md).
+const CLOUD_REPO = 'Orton3107/ios-pwa-player';
+const CLOUD_BRANCH = 'main';
+const CLOUD_BASE_URL = `https://cdn.jsdelivr.net/gh/${CLOUD_REPO}@${CLOUD_BRANCH}/cloud-playlist/`;
+const CLOUD_MANIFEST_URL = `${CLOUD_BASE_URL}manifest.json`;
+const CLOUD_DEFAULT_COVER = 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?q=80&w=300&h=300&fit=crop';
+
 // Склонение слова "трек" по числу (1 трек, 2 трека, 5 треков)
 const trackWord = (count) => {
   const abs = Math.abs(count) % 100;
@@ -100,6 +108,10 @@ export default function App() {
   // Всплывающее уведомление (например, о пропущенных дублях при загрузке)
   const [uploadNotice, setUploadNotice] = useState('');
 
+  // Синхронизация облачного плейлиста (см. cloud-playlist/README.md)
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+  const [cloudSyncNotice, setCloudSyncNotice] = useState('');
+
   // Фон плеера: { type: 'default' } | { type: 'preset', presetId } | { type: 'custom', imageUrl }
   const [background, setBackground] = useState({ type: 'default' });
   // Защищено ли хранилище от автоматической очистки Safari при простое
@@ -130,6 +142,7 @@ export default function App() {
     setupInitialData();
     loadBackground();
     requestPersistentStorage();
+    syncCloudPlaylist({ silent: true });
   }, []);
 
   // Просим браузер пометить хранилище сайта как "постоянное".
@@ -592,6 +605,104 @@ export default function App() {
     }
   };
 
+  // Синхронизация облачного плейлиста: тянет manifest.json с CDN (jsDelivr
+  // поверх GitHub-репозитория, см. cloud-playlist/README.md) и приводит
+  // выделенный плейлист с флагом isCloud в соответствие с манифестом —
+  // добавляет новые треки, обновляет метаданные и убирает те, что пропали
+  // из манифеста. Локально загруженные файлы (без sourceFile) не трогает.
+  const syncCloudPlaylist = async ({ silent = false } = {}) => {
+    setIsSyncingCloud(true);
+    try {
+      const res = await fetch(`${CLOUD_MANIFEST_URL}?t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const manifest = await res.json();
+      const manifestTracks = Array.isArray(manifest.tracks) ? manifest.tracks : [];
+
+      const db = await initDB();
+
+      const playlistsData = await new Promise((resolve) => {
+        const req = db.transaction(PLAYLISTS_STORE, 'readonly').objectStore(PLAYLISTS_STORE).getAll();
+        req.onsuccess = () => resolve(req.result);
+      });
+
+      const playlistName = manifest.playlistName || 'Облако';
+      const playlistCover = manifest.playlistCover || CLOUD_DEFAULT_COVER;
+      let cloudPlaylist = playlistsData.find(p => p.isCloud);
+
+      if (!cloudPlaylist) {
+        const pTx = db.transaction(PLAYLISTS_STORE, 'readwrite');
+        const addReq = pTx.objectStore(PLAYLISTS_STORE).add({ name: playlistName, cover: playlistCover, isCloud: true });
+        const newId = await new Promise((resolve) => { addReq.onsuccess = () => resolve(addReq.result); });
+        cloudPlaylist = { id: newId, name: playlistName, cover: playlistCover, isCloud: true };
+      } else if (cloudPlaylist.name !== playlistName || cloudPlaylist.cover !== playlistCover) {
+        const pTx = db.transaction(PLAYLISTS_STORE, 'readwrite');
+        pTx.objectStore(PLAYLISTS_STORE).put({ ...cloudPlaylist, name: playlistName, cover: playlistCover });
+        cloudPlaylist = { ...cloudPlaylist, name: playlistName, cover: playlistCover };
+      }
+
+      const existingTracks = await new Promise((resolve) => {
+        const req = db.transaction(TRACKS_STORE, 'readonly').objectStore(TRACKS_STORE).getAll();
+        req.onsuccess = () => resolve(req.result.filter(t => t.playlistId === cloudPlaylist.id));
+      });
+
+      const manifestFiles = new Set(manifestTracks.map(t => t.file));
+      const existingByFile = new Map(existingTracks.filter(t => t.sourceFile).map(t => [t.sourceFile, t]));
+
+      const tx = db.transaction(TRACKS_STORE, 'readwrite');
+      const store = tx.objectStore(TRACKS_STORE);
+
+      // Убираем ранее синхронизированные треки, которых больше нет в манифесте
+      existingTracks.forEach(t => {
+        if (t.sourceFile && !manifestFiles.has(t.sourceFile)) {
+          store.delete(t.id);
+        }
+      });
+
+      let added = 0;
+      manifestTracks.forEach(mt => {
+        if (!mt.file) return;
+        const trackData = {
+          playlistId: cloudPlaylist.id,
+          title: mt.title || mt.file,
+          artist: mt.artist || '',
+          cover: mt.cover || playlistCover,
+          url: `${CLOUD_BASE_URL}${mt.file}`,
+          sourceFile: mt.file,
+          isLocal: false,
+        };
+
+        const existing = existingByFile.get(mt.file);
+        if (existing) {
+          store.put({ ...existing, ...trackData });
+        } else {
+          store.add(trackData);
+          added++;
+        }
+      });
+
+      await new Promise((resolve) => { tx.oncomplete = resolve; });
+
+      loadTrackCounts();
+      if (selectedPlaylistId === cloudPlaylist.id) {
+        loadPlaylistTracks(cloudPlaylist.id);
+      }
+      setupInitialData();
+
+      if (!silent) {
+        setCloudSyncNotice(added > 0 ? `Облачный плейлист обновлён: +${added} ${trackWord(added)}` : 'Облачный плейлист уже актуален');
+        setTimeout(() => setCloudSyncNotice(''), 3500);
+      }
+    } catch (err) {
+      console.error('Ошибка синхронизации облачного плейлиста:', err);
+      if (!silent) {
+        setCloudSyncNotice('Не удалось обновить облачный плейлист');
+        setTimeout(() => setCloudSyncNotice(''), 3500);
+      }
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
   // Удаление песни из плейлиста
   const handleDeleteTrack = async (trackId, e) => {
     e.stopPropagation();
@@ -911,14 +1022,27 @@ export default function App() {
           selectedPlaylistId === null ? (
             /* 2А: Список всех плейлистов */
             <div className="flex h-full flex-col justify-start pt-2 pb-4 overflow-hidden">
-              <div className="mb-4 px-2">
-                <button 
+              <div className="mb-4 px-2 space-y-2">
+                <button
                   onClick={() => setShowCreateModal(true)}
                   className="flex w-full items-center justify-center space-x-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 p-4 font-semibold text-white shadow-lg active:scale-[0.99] transition-all"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
                   <span>Создать новый плейлист</span>
                 </button>
+                <button
+                  onClick={() => syncCloudPlaylist()}
+                  disabled={isSyncingCloud}
+                  className="flex w-full items-center justify-center space-x-2 rounded-2xl border border-white/10 bg-white/5 p-3 text-sm font-semibold text-slate-200 active:scale-[0.99] transition-all disabled:opacity-50"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`w-4 h-4 ${isSyncingCloud ? 'animate-spin' : ''}`}><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
+                  <span>{isSyncingCloud ? 'Обновляем...' : 'Обновить облачный плейлист'}</span>
+                </button>
+                {cloudSyncNotice && (
+                  <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-300 text-center">
+                    {cloudSyncNotice}
+                  </div>
+                )}
               </div>
 
               {/* Сетка плейлистов в стиле iOS */}
