@@ -1,5 +1,36 @@
 {
   "playlistName": "Облако",
   "playlistCover": "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?q=80&w=300&h=300&fit=crop",
-  "tracks": []
+  "tracks": [
+    {
+      "file": "tracks/Билет.mp3",
+      "title": "Билет",
+      "artist": ""
+    },
+    {
+      "file": "tracks/Брат.mp3",
+      "title": "Брат",
+      "artist": ""
+    },
+    {
+      "file": "tracks/Кишинев выбрал меня сам v1.mp3",
+      "title": "Кишинёв выбрал меня сам v1",
+      "artist": "Khatko Serhii"
+    },
+    {
+      "file": "tracks/Кишинев выбрал меня сам v2.mp3",
+      "title": "Кишинёв выбрал меня сам",
+      "artist": "Serhii Khatko"
+    },
+    {
+      "file": "tracks/Повернутись додому.mp3",
+      "title": "Повернутись додому",
+      "artist": ""
+    },
+    {
+      "file": "tracks/Сквозь километры.mp3",
+      "title": "Сквозь километры",
+      "artist": "phantasmagoricfrequency9927"
+    }
+  ]
 }
