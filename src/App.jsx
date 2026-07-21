@@ -1046,7 +1046,7 @@ export default function App() {
               </div>
 
               {/* Сетка плейлистов в стиле iOS */}
-              <div className="flex-1 overflow-y-auto grid grid-cols-2 gap-4 p-2 max-h-[380px]">
+              <div className="flex-1 overflow-y-auto grid grid-cols-2 content-start gap-4 p-2">
                 {playlists.map((playlist) => {
                   const count = trackCounts[playlist.id] || 0;
                   return (
@@ -1118,7 +1118,7 @@ export default function App() {
               )}
 
               {/* Список песен в плейлисте */}
-              <div className="flex-1 overflow-y-auto space-y-2 pr-1 max-h-[320px] pb-4">
+              <div className="flex-1 overflow-y-auto space-y-2 pr-1 pb-4">
                 {currentPlaylistTracks.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-48 text-slate-500">
                     <p className="text-sm">В этом плейлисте пока нет песен.</p>
@@ -1157,7 +1157,7 @@ export default function App() {
 
         {/* ================= ТАБ 3: НАСТРОЙКИ ================= */}
         {activeTab === 'settings' && (
-          <div className="flex h-full flex-col justify-start pt-2 pb-4 overflow-y-auto max-h-[460px] space-y-6 px-2">
+          <div className="flex h-full flex-col justify-start pt-2 pb-4 overflow-y-auto space-y-6 px-2">
             <div>
               <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3 px-1">Фон плеера</h3>
               <div className="grid grid-cols-3 gap-3 mb-3">
